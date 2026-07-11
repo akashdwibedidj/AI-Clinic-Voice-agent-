@@ -7,7 +7,7 @@ import re
 
 # ── paths ──────────────────────────────────────────────────────────────────
 BASE_DIR       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BOOKS_DIR      = os.path.join(BASE_DIR, "books")
+BOOKS_DIR      = os.path.join(BASE_DIR, "doc_data")
 OUTPUT_DIR     = os.path.join(BASE_DIR, "cleaned_texts")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -30,15 +30,15 @@ def extract_pdf(filepath):
     doc.close()
     return "\n".join(full_text)
 
-def extract_epub(filepath):
-    """Extract text from an EPUB file."""
-    book = epub.read_epub(filepath)
-    full_text = []
-    for item in book.get_items():
-        if item.get_type() == ebooklib.ITEM_DOCUMENT:
-            soup = BeautifulSoup(item.get_content(), 'html.parser')
-            full_text.append(soup.get_text(separator='\n'))
-    return "\n".join(full_text)
+# def extract_epub(filepath):
+#     """Extract text from an EPUB file."""
+#     book = epub.read_epub(filepath)
+#     full_text = []
+#     for item in book.get_items():
+#         if item.get_type() == ebooklib.ITEM_DOCUMENT:
+#             soup = BeautifulSoup(item.get_content(), 'html.parser')
+#             full_text.append(soup.get_text(separator='\n'))
+#     return "\n".join(full_text)
 
 # ── main loop ──────────────────────────────────────────────────────────────
 def process_all_books():
@@ -66,8 +66,8 @@ def process_all_books():
         try:
             if ext == ".pdf":
                 raw_text = extract_pdf(filepath)
-            elif ext == ".epub":
-                raw_text = extract_epub(filepath)
+            # elif ext == ".epub":
+            #     raw_text = extract_epub(filepath)
             elif ext == ".txt":
                 with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                     raw_text = f.read()
