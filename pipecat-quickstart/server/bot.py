@@ -37,10 +37,12 @@ from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.openai.responses.llm import OpenAIResponsesLLMService
+# from pipecat.services.openai.responses.llm import OpenAIResponsesLLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
 from pipecat.workers.runner import WorkerRunner
+# from pipecat.services.openai import OpenAILLMService
+from pipecat.services.openai.llm import OpenAILLMService
 
 load_dotenv(override=True)
 
@@ -69,16 +71,19 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     )
 
     # LLM service
-    llm = OpenAIResponsesLLMService(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        settings=OpenAIResponsesLLMService.Settings(
-            base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:11434/v1"),
-            model=os.getenv("OPENAI_MODEL", "mistral:latest"),
-            system_instruction="You are a helpful assistant in a voice conversation. Your responses will be spoken aloud, so avoid emojis, bullet points, or other formatting that can't be spoken. Respond to what the user said in a creative, helpful, and brief way.",
-        ),
+    llm = OpenAILLMService(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:11434/v1"),
+    model=os.getenv("OPENAI_MODEL", "mistral:latest"),
     )
+    messages = [
+    {
+        "role": "system",
+        "content": "You are a helpful assistant in a voice conversation. Your responses will be spoken aloud, so avoid emojis, bullet points, or other formatting that can't be spoken. Respond to what the user said in a creative, helpful, and brief way.",
+    },
+    ]
 
-    context = LLMContext()
+    context = LLMContext(messages)
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
