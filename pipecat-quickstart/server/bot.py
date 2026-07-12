@@ -46,6 +46,13 @@ from pipecat.services.openai.llm import OpenAILLMService
 
 load_dotenv(override=True)
 
+from rag_processor import RAGProcessor
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+VECTOR_DB_PATH = os.path.normpath(
+    os.path.join(BASE_DIR, "..", "..", "vector_db")
+)
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
     """Run the voice bot for this session.
@@ -79,7 +86,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     messages = [
     {
         "role": "system",
-        "content": "You are a helpful assistant in a voice conversation. Your responses will be spoken aloud, so avoid emojis, bullet points, or other formatting that can't be spoken. Respond to what the user said in a creative, helpful, and brief way.",
+        "content": "you are an helpful assistant at an private hospital who speaks english and do conversation with your customoers acording to their need. you get the data of doctors and give the information according to what quastines the customer asks. after a successful conversation you will ask the customer to give a feedback about your service and you will give a thank you message to the customer for using your service. you will not give any information about yourself or your company. you will only give information about the doctors and their services.",
     },
     ]
 
@@ -89,11 +96,13 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
     )
 
-    # Pipeline - assembled from reusable components
+    rag = RAGProcessor(context=context, db_path=VECTOR_DB_PATH, top_k=2)
+
     pipeline = Pipeline(
         [
             transport.input(),
             stt,
+            rag,                 # <-- new: retrieves + injects context here
             user_aggregator,
             llm,
             tts,
