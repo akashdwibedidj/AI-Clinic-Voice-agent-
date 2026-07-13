@@ -37,22 +37,65 @@ from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
-# from pipecat.services.openai.responses.llm import OpenAIResponsesLLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
 from pipecat.workers.runner import WorkerRunner
-# from pipecat.services.openai import OpenAILLMService
 from pipecat.services.openai.llm import OpenAILLMService
 
+# --- NEW imports needed for function calling ---
+from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.services.llm_service import FunctionCallParams
+from pipecat.services.deepgram.tts import DeepgramTTSService
+from pipecat.services.sarvam.stt import SarvamSTTService
+from pipecat.services.sarvam.tts import SarvamTTSService
+
+
 load_dotenv(override=True)
+import aiohttp
 
 from rag_processor import RAGProcessor
 
+N8N_WEBHOOK_URL = "http://localhost:5678/webhook/create-event"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VECTOR_DB_PATH = os.path.normpath(
     os.path.join(BASE_DIR, "..", "..", "vector_db")
 )
+
+
+# --- NEW: function handler moved to module level, new signature ---
+async def book_appointment_tool(params: FunctionCallParams):
+    """Hits the local n8n container when the LLM triggers function calling."""
+    arguments = params.arguments
+    logger.info(f"LLM requested booking: {arguments}")
+
+    payload = {
+        "title": arguments.get("title", "Hospital Appointment"),
+        "start": arguments.get("start"),
+        "end": arguments.get("end"),
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                N8N_WEBHOOK_URL, json=payload, timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status in (200, 201):
+                    logger.info("Successfully pushed metadata to n8n.")
+                    await params.result_callback(
+                        "Appointment successfully registered in the system calendar."
+                    )
+                else:
+                    await params.result_callback(
+                        "The booking system is busy. Please try again."
+                    )
+    except Exception as e:
+        logger.error(f"Failed to communicate with n8n: {e}")
+        await params.result_callback(
+            "Internal connection error. Could not write to the calendar."
+        )
+
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
     """Run the voice bot for this session.
@@ -67,30 +110,69 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     logger.info("Starting bot")
 
     # Speech-to-Text service
-    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
+    stt = SarvamSTTService(
+    api_key=os.getenv("SARVAM_API_KEY"),
+    settings=SarvamSTTService.Settings(model="saaras:v3", mode="translate"),
+    )
 
     # Text-to-Speech service
-    tts = CartesiaTTSService(
-        api_key=os.getenv("CARTESIA_API_KEY"),
-        settings=CartesiaTTSService.Settings(
-            voice=os.getenv("CARTESIA_VOICE_ID", "71a7ad14-091c-4e8e-a314-022ece01c121"),
+    # tts = DeepgramTTSService(
+    #     api_key=os.getenv("DEEPGRAM_API_KEY"),
+    #     voice=os.getenv("DEEPGRAM_VOICE", "aura-asteria-en"),
+    # )
+    tts = SarvamTTSService(
+    api_key=os.getenv("SARVAM_API_KEY"),
+    settings=SarvamTTSService.Settings(language="od-IN"),
+    )
+
+    # --- NEW: FunctionSchema + ToolsSchema instead of raw OpenAI dict ---
+    appointment_function = FunctionSchema(
+        name="book_appointment",
+        description="Call this when the user confirms a specific purpose, date, and time for an appointment. or you can suggest 2 options of time and date around the current data and time today is 12/07/2026 and give the perpose acouding to user needs which doctor.",
+        properties={
+            "title": {
+                "type": "string",
+                "description": "Appointment reason, e.g., 'Checkup with Dr. Smith'",
+            },
+            "start": {
+                "type": "string",
+                "description": "ISO 8601 start time, e.g., '2026-07-15T10:00:00Z'",
+            },
+            "end": {
+                "type": "string",
+                "description": "ISO 8601 end time, e.g., '2026-07-15T11:00:00Z'",
+            },
+        },
+        required=["title", "start", "end"],
+    )
+    tools = ToolsSchema(standard_tools=[appointment_function])
+
+    # LLM service — NOTE: no tools= here anymore
+    llm = OpenAILLMService(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:11434/v1"),
+        settings=OpenAILLMService.Settings(
+            model=os.getenv("OPENAI_MODEL", "llama3.1:latest"),
         ),
     )
 
-    # LLM service
-    llm = OpenAILLMService(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:11434/v1"),
-    model=os.getenv("OPENAI_MODEL", "mistral:latest"),
-    )
+    # --- NEW: register_function instead of register_tool_handler ---
+    llm.register_function("book_appointment", book_appointment_tool)
+
     messages = [
-    {
-        "role": "system",
-        "content": "you are an helpful assistant at an private hospital who speaks english and do conversation with your customoers acording to their need. you get the data of doctors and give the information according to what quastines the customer asks. after a successful conversation you will ask the customer to give a feedback about your service and you will give a thank you message to the customer for using your service. you will not give any information about yourself or your company. you will only give information about the doctors and their services.",
-    },
+        {
+            "role": "system",
+            "content": (
+                "You are a helpful assistant at a private hospital who guides customers according to their needs. "
+                "Provide information about doctors using your context. When a customer explicitly confirms they want to book an appointment, "
+                "gather the purpose, start time, and end time, then immediately trigger the 'book_appointment' tool. "
+                "After a successful booking, ask for feedback and thank them."
+            ),
+        },
     ]
 
-    context = LLMContext(messages)
+    # --- NEW: tools passed into the context, not the llm ---
+    context = LLMContext(messages, tools=tools)
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
@@ -102,7 +184,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         [
             transport.input(),
             stt,
-            rag,                 # <-- new: retrieves + injects context here
+            rag,                 # <-- retrieves + injects context here
             user_aggregator,
             llm,
             tts,
