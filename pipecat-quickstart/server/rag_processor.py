@@ -1,3 +1,4 @@
+import re
 import chromadb
 from sentence_transformers import SentenceTransformer
 from loguru import logger
@@ -20,12 +21,29 @@ class RAGProcessor(FrameProcessor):
         self.collection = self.client.get_or_create_collection(name=collection_name)
         self.top_k = top_k
 
+        # NEW: remember index of the last RAG-injected message so we can replace it
+        self._last_rag_msg = None
+
+        # NEW: simple booking-intent detector to skip retrieval once slot-filling starts
+        self._booking_pattern = re.compile(
+            r"\b(book|appointment|confirm|yes|schedule|\d{1,2}\s?(am|pm)|"
+            r"january|february|march|april|may|june|july|august|september|october|november|december)\b",
+            re.IGNORECASE,
+        )
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        # Only trigger RAG when we get a finalized user transcription
         if isinstance(frame, TranscriptionFrame) and frame.text.strip():
             query = frame.text.strip()
+
+            # NEW: skip retrieval once the user seems to be confirming/booking
+            # (short utterances like "Yes.", "At one PM.", dates, etc.)
+            if self._booking_pattern.search(query) or len(query.split()) <= 4:
+                logger.info(f"RAG: skipping retrieval, booking-intent detected: {query}")
+                await self.push_frame(frame, direction)
+                return
+
             logger.info(f"RAG: retrieving context for query: {query}")
 
             embed_q = self.embed_model.encode([query])
@@ -38,18 +56,22 @@ class RAGProcessor(FrameProcessor):
             retrieved_context = "\n\n".join(chunks)
 
             if retrieved_context:
-                # Inject retrieved context as a system-level message
-                # right before this user turn gets processed by the LLM
-                self.context.add_message(
-                    {
-                        "role": "system",
-                        "content": (
-                            "Use ONLY the following context to answer the "
-                            f"user's next question if relevant:\n\n{retrieved_context}"
-                        ),
-                    }
-                )
-                logger.info(f"RAG: injected {len(chunks)} chunks into context")
+                new_msg = {
+                    "role": "system",
+                    "content": (
+                        "Use ONLY the following context to answer the "
+                        f"user's next question if relevant:\n\n{retrieved_context}"
+                    ),
+                }
 
-        # Always pass the frame downstream unchanged
+                # NEW: replace the previous RAG message instead of appending a new one
+                if self._last_rag_msg is not None and self._last_rag_msg in self.context.messages:
+                    idx = self.context.messages.index(self._last_rag_msg)
+                    self.context.messages[idx] = new_msg
+                else:
+                    self.context.add_message(new_msg)
+
+                self._last_rag_msg = new_msg
+                logger.info(f"RAG: injected {len(chunks)} chunks into context (replaced old injection)")
+
         await self.push_frame(frame, direction)

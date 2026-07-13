@@ -1,6 +1,7 @@
 from sentence_transformers import SentenceTransformer
 import json
 import numpy as np
+import os
 
 
 model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -8,8 +9,12 @@ model = SentenceTransformer('all-MiniLM-L6-v2')
 with open('chunks/all_chunks.json', 'r', encoding='utf-8') as f:
     all_chunks = json.load(f)
 
-old_embeddings = np.load('chunks/embeddings.npy')
-old_count = len(old_embeddings)
+if os.path.exists('chunks/embeddings.npy'):
+    old_embeddings = np.load('chunks/embeddings.npy')
+    old_count = len(old_embeddings)
+else:
+    old_embeddings = None
+    old_count = 0
 
 print(f"Existing embeddings: {old_count}")
 print(f"Total chunks now: {len(all_chunks)}")
@@ -23,7 +28,10 @@ else:
     texts = [item['text'] for item in new_chunks]
 
     new_embeddings = model.encode(texts, show_progress_bar=True)
-    all_embeddings = np.vstack([old_embeddings, new_embeddings])
+    if old_embeddings is None:
+        all_embeddings = new_embeddings
+    else:
+        all_embeddings = np.vstack([old_embeddings, new_embeddings])
 
     # embeddings is already a numpy array → no need for np.array()
     np.save('chunks/embeddings.npy', all_embeddings)
